@@ -45,7 +45,10 @@ function createStudioEnvironment() {
   envScene.background = new THREE.Color(0x14171f);
 
   const addPanel = (color, intensity, pos, rot, size) => {
-    const mat = new THREE.MeshBasicMaterial({ color: new THREE.Color(color).multiplyScalar(intensity), side: THREE.DoubleSide });
+    const mat = new THREE.MeshBasicMaterial({
+      color: new THREE.Color(color).multiplyScalar(intensity),
+      side: THREE.DoubleSide
+    });
     const mesh = new THREE.Mesh(new THREE.PlaneGeometry(size[0], size[1]), mat);
     mesh.position.set(...pos);
     mesh.rotation.set(...rot);
@@ -261,24 +264,80 @@ function playClip(index) {
   }
 }
 
-function prepareMaterialsAndShadows(fbx) {
+// Fix black silhouettes caused by missing external textures, all-black vertex colors,
+// #000000 diffuse values, missing normals, or legacy Phong materials
+function sanitizeMaterials(fbx) {
   fbx.traverse((child) => {
-    if (child.isMesh) {
-      child.castShadow = true;
-      child.receiveShadow = true;
+    if (!child.isMesh) return;
 
-      const materials = Array.isArray(child.material) ? child.material : [child.material];
-      materials.forEach((mat) => {
-        if (!mat) return;
-        if (mat.map) mat.map.colorSpace = THREE.SRGBColorSpace;
-        // Soften overly harsh default Phong specular highlights from FBX imports
-        if (mat.isMeshPhongMaterial) {
-          mat.shininess = Math.min(mat.shininess || 30, 40);
-          if (mat.specular) mat.specular.multiplyScalar(0.35);
-        }
-        mat.needsUpdate = true;
-      });
+    child.castShadow = true;
+    child.receiveShadow = true;
+
+    // 1. Recompute normals if missing
+    if (!child.geometry.attributes.normal) {
+      child.geometry.computeVertexNormals();
     }
+
+    // 2. Strip vertex colors if they are all black
+    const colorAttr = child.geometry.attributes.color;
+    let hasValidVertexColors = false;
+    if (colorAttr) {
+      let maxVal = 0;
+      const step = Math.max(1, Math.floor(colorAttr.count / 100));
+      for (let i = 0; i < colorAttr.count; i += step) {
+        maxVal = Math.max(maxVal, colorAttr.getX(i), colorAttr.getY(i), colorAttr.getZ(i));
+      }
+      if (maxVal < 0.05) {
+        child.geometry.deleteAttribute('color');
+      } else {
+        hasValidVertexColors = true;
+      }
+    }
+
+    // 3. Clean & upgrade materials to PBR MeshStandardMaterial
+    const oldMats = Array.isArray(child.material) ? child.material : [child.material];
+    const newMats = oldMats.map((mat) => {
+      if (!mat) return new THREE.MeshStandardMaterial({ color: 0xd1d5db, roughness: 0.55 });
+
+      // Preserve original texture references across async LoadingManager passes
+      const origMap = mat.userData.origMap !== undefined ? mat.userData.origMap : mat.map;
+      const origNormal = mat.userData.origNormal !== undefined ? mat.userData.origNormal : mat.normalMap;
+
+      const hasValidMap = Boolean(origMap && origMap.image && origMap.image.width > 0);
+      const validMap = hasValidMap ? origMap : null;
+      if (validMap) validMap.colorSpace = THREE.SRGBColorSpace;
+
+      const validNormal = (origNormal && origNormal.image && origNormal.image.width > 0) ? origNormal : null;
+
+      // Fix black diffuse color (#000000) exported by Blender/Maya
+      const origColor = mat.userData.origColor || (mat.color ? mat.color.clone() : new THREE.Color(0xd1d5db));
+      const baseColor = origColor.clone();
+      const isBlack = (baseColor.r + baseColor.g + baseColor.b) < 0.05;
+      if (isBlack) {
+        baseColor.setHex(validMap ? 0xffffff : 0xd1d5db);
+      }
+
+      const stdMat = new THREE.MeshStandardMaterial({
+        name: mat.name,
+        color: baseColor,
+        map: validMap,
+        normalMap: validNormal,
+        vertexColors: hasValidVertexColors,
+        roughness: 0.55,
+        metalness: 0.1,
+        side: mat.side ?? THREE.FrontSide,
+        transparent: mat.transparent ?? false,
+        opacity: mat.opacity ?? 1.0,
+        alphaTest: mat.alphaTest ?? 0
+      });
+
+      stdMat.userData.origMap = origMap;
+      stdMat.userData.origNormal = origNormal;
+      stdMat.userData.origColor = origColor;
+      return stdMat;
+    });
+
+    child.material = Array.isArray(child.material) ? newMats : newMats[0];
   });
 }
 
@@ -293,12 +352,21 @@ function loadFBXFile(file) {
   statusEl.style.color = '#4ade80';
   statusEl.textContent = `Loading "${file.name}"...`;
 
+  const manager = new THREE.LoadingManager();
+  let loadedFbx = null;
+
+  // Re-run sanitization after all embedded/external textures finish loading or failing
+  manager.onLoad = () => {
+    if (loadedFbx) sanitizeMaterials(loadedFbx);
+  };
+
   const url = URL.createObjectURL(file);
-  new FBXLoader().load(
+  new FBXLoader(manager).load(
     url,
     (fbx) => {
       URL.revokeObjectURL(url);
-      prepareMaterialsAndShadows(fbx);
+      loadedFbx = fbx;
+      sanitizeMaterials(fbx);
 
       scene.remove(modelPivot);
       modelPivot = new THREE.Group();
