@@ -27,8 +27,13 @@ const cancelBtn = document.getElementById('cancelBtn');
 const progressBar = document.getElementById('progressBar');
 const statusEl = document.getElementById('status');
 
-// 1. Renderer with AgX Tone Mapping & Soft Shadows
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
+// 1. Opaque WebGL Renderer with AgX Tone Mapping & Soft Shadows
+const renderer = new THREE.WebGLRenderer({
+  canvas,
+  alpha: false,
+  antialias: true,
+  preserveDrawingBuffer: true
+});
 renderer.setSize(1280, 720, false);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.AgXToneMapping;
@@ -39,7 +44,7 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(bgColorInput.value);
 
-// 2. Procedural Studio Softbox IBL Environment (for realistic PBR & metallic reflections)
+// 2. Procedural Studio Softbox IBL Environment
 function createStudioEnvironment() {
   const envScene = new THREE.Scene();
   envScene.background = new THREE.Color(0x14171f);
@@ -55,7 +60,6 @@ function createStudioEnvironment() {
     envScene.add(mesh);
   };
 
-  // Overhead softbox, warm right strip, cool left strip, subtle floor bounce
   addPanel(0xffffff, 4.5, [0, 6, 0], [Math.PI / 2, 0, 0], [6, 6]);
   addPanel(0xfff4e6, 3.0, [5, 2, 3], [0, -Math.PI / 3, 0], [3, 5]);
   addPanel(0xdbeafe, 2.5, [-5, 2, -2], [0, Math.PI / 2.5, 0], [3, 5]);
@@ -76,7 +80,6 @@ scene.add(lightRig);
 const hemiLight = new THREE.HemisphereLight(0xf8fafc, 0x262b36, 0.45);
 scene.add(hemiLight);
 
-// Key Light (casts tight, high-res shadows on the 1-unit radius normalized model)
 const keyLight = new THREE.DirectionalLight(0xfffaf0, 2.4);
 keyLight.position.set(0, 3.5, 3.2);
 keyLight.castShadow = true;
@@ -92,12 +95,10 @@ keyLight.shadow.bias = -0.0004;
 keyLight.shadow.normalBias = 0.025;
 lightRig.add(keyLight);
 
-// Fill Light (softens dark shadows on the opposite side)
 const fillLight = new THREE.DirectionalLight(0xdbeafe, 0.95);
 fillLight.position.set(-3.2, 1.4, 2.2);
 lightRig.add(fillLight);
 
-// Rim / Back Light (separates silhouette from background)
 const rimLight = new THREE.DirectionalLight(0xe0f2fe, 2.1);
 rimLight.position.set(-1.2, 2.6, -3.5);
 lightRig.add(rimLight);
@@ -179,7 +180,6 @@ function updateLightRigOrientation() {
   }
 }
 
-// Compute union bounding box across the animation clip
 function computeAnimatedBounds(fbx, animMixer, clip) {
   const unionBox = new THREE.Box3();
   const sampleBox = new THREE.Box3();
@@ -215,7 +215,6 @@ function frameModel(clip = null) {
   const scale = sphere.radius > 0 ? 1.0 / sphere.radius : 1.0;
   modelPivot.scale.setScalar(scale);
 
-  // Place floor grid & shadow catcher directly beneath the model's lowest point
   const scaledMinY = (box.min.y - center.y) * scale;
   grid.position.y = scaledMinY;
   shadowCatcher.position.y = scaledMinY + 0.001;
@@ -264,8 +263,6 @@ function playClip(index) {
   }
 }
 
-// Fix black silhouettes caused by missing external textures, all-black vertex colors,
-// #000000 diffuse values, missing normals, or legacy Phong materials
 function sanitizeMaterials(fbx) {
   fbx.traverse((child) => {
     if (!child.isMesh) return;
@@ -273,12 +270,10 @@ function sanitizeMaterials(fbx) {
     child.castShadow = true;
     child.receiveShadow = true;
 
-    // 1. Recompute normals if missing
     if (!child.geometry.attributes.normal) {
       child.geometry.computeVertexNormals();
     }
 
-    // 2. Strip vertex colors if they are all black
     const colorAttr = child.geometry.attributes.color;
     let hasValidVertexColors = false;
     if (colorAttr) {
@@ -294,12 +289,10 @@ function sanitizeMaterials(fbx) {
       }
     }
 
-    // 3. Clean & upgrade materials to PBR MeshStandardMaterial
     const oldMats = Array.isArray(child.material) ? child.material : [child.material];
     const newMats = oldMats.map((mat) => {
       if (!mat) return new THREE.MeshStandardMaterial({ color: 0xd1d5db, roughness: 0.55 });
 
-      // Preserve original texture references across async LoadingManager passes
       const origMap = mat.userData.origMap !== undefined ? mat.userData.origMap : mat.map;
       const origNormal = mat.userData.origNormal !== undefined ? mat.userData.origNormal : mat.normalMap;
 
@@ -309,7 +302,6 @@ function sanitizeMaterials(fbx) {
 
       const validNormal = (origNormal && origNormal.image && origNormal.image.width > 0) ? origNormal : null;
 
-      // Fix black diffuse color (#000000) exported by Blender/Maya
       const origColor = mat.userData.origColor || (mat.color ? mat.color.clone() : new THREE.Color(0xd1d5db));
       const baseColor = origColor.clone();
       const isBlack = (baseColor.r + baseColor.g + baseColor.b) < 0.05;
@@ -355,7 +347,6 @@ function loadFBXFile(file) {
   const manager = new THREE.LoadingManager();
   let loadedFbx = null;
 
-  // Re-run sanitization after all embedded/external textures finish loading or failing
   manager.onLoad = () => {
     if (loadedFbx) sanitizeMaterials(loadedFbx);
   };
@@ -419,7 +410,6 @@ dropzone.addEventListener('drop', (e) => {
 });
 
 clipSelect.addEventListener('change', (e) => playClip(Number(e.target.value)));
-
 lightPresetSelect.addEventListener('change', (e) => applyLightPreset(e.target.value));
 expSlider.addEventListener('input', () => {
   const val = Number(expSlider.value);
@@ -466,6 +456,34 @@ cancelBtn.addEventListener('click', () => {
   abortRender = true;
 });
 
+// Pick the most compatible H.264 profile supported by the user's browser/GPU
+async function findSupportedH264Config(width, height, bitrate, framerate) {
+  const codecs = [
+    'avc1.42E028', // Constrained Baseline Level 4.0 (widest compatibility: Windows/Mac/iOS/Software)
+    'avc1.4d0028', // Main Profile Level 4.0
+    'avc1.640028', // High Profile Level 4.0
+    'avc1.42001f'  // Baseline Level 3.1 fallback
+  ];
+
+  for (const codec of codecs) {
+    const candidate = {
+      codec,
+      width,
+      height,
+      bitrate,
+      framerate,
+      avc: { format: 'avc' }
+    };
+    try {
+      const result = await VideoEncoder.isConfigSupported(candidate);
+      if (result.supported) return result.config;
+    } catch {
+      // Try next profile
+    }
+  }
+  return null;
+}
+
 // Deterministic 30s MP4 Export
 exportBtn.addEventListener('click', async () => {
   if (!currentFbx || isRendering) return;
@@ -480,27 +498,41 @@ exportBtn.addEventListener('click', async () => {
   const [width, height] = resolutionSelect.value.split('x').map(Number);
   const bitrate = width * height >= 1920 * 1080 ? 8_000_000 : 5_000_000;
 
+  const encoderConfig = await findSupportedH264Config(width, height, bitrate, FPS);
+  if (!encoderConfig) {
+    statusEl.style.color = '#f87171';
+    statusEl.textContent = 'No supported H.264 encoder found in this browser.';
+    isRendering = false;
+    exportBtn.disabled = false;
+    cancelBtn.hidden = true;
+    progressBar.hidden = true;
+    return;
+  }
+
+  // Opaque 2D staging canvas ensures WebCodecs receives standard RGB frames (outputs yuv420p)
+  const exportCanvas = document.createElement('canvas');
+  exportCanvas.width = width;
+  exportCanvas.height = height;
+  const exportCtx = exportCanvas.getContext('2d', { alpha: false });
+
+  let encoderError = null;
   const muxer = new Mp4Muxer.Muxer({
     target: new Mp4Muxer.ArrayBufferTarget(),
     video: { codec: 'avc', width, height },
+    firstTimestampBehavior: 'offset',
     fastStart: 'in-memory'
   });
 
   const encoder = new VideoEncoder({
     output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
     error: (err) => {
+      encoderError = err;
       statusEl.style.color = '#f87171';
       statusEl.textContent = `Encoder error: ${err.message}`;
     }
   });
 
-  encoder.configure({
-    codec: 'avc1.4d002a',
-    width,
-    height,
-    bitrate,
-    framerate: FPS
-  });
+  encoder.configure(encoderConfig);
 
   if (mixer && activeAction) {
     activeAction.reset();
@@ -508,16 +540,30 @@ exportBtn.addEventListener('click', async () => {
   }
 
   const dt = 1 / FPS;
+  const frameDurationUs = Math.round(1_000_000 / FPS);
+
   for (let frameIdx = 0; frameIdx < TOTAL_FRAMES; frameIdx++) {
-    if (abortRender) break;
+    if (abortRender || encoderError) break;
 
     if (mixer && activeAction) mixer.update(dt);
     setCameraAngle(frameIdx / TOTAL_FRAMES);
     renderer.render(scene, camera);
 
-    const frame = new VideoFrame(canvas, { timestamp: frameIdx * (1_000_000 / FPS) });
+    exportCtx.drawImage(canvas, 0, 0, width, height);
+
+    const frame = new VideoFrame(exportCanvas, {
+      timestamp: frameIdx * frameDurationUs,
+      duration: frameDurationUs
+    });
     encoder.encode(frame, { keyFrame: frameIdx % 60 === 0 });
     frame.close();
+
+    // Backpressure: wait if the hardware/software encoder queue is full
+    if (encoder.encodeQueueSize > 5) {
+      await new Promise((resolve) => {
+        encoder.addEventListener('dequeue', resolve, { once: true });
+      });
+    }
 
     if (frameIdx % 10 === 0) {
       progressBar.value = frameIdx;
@@ -527,23 +573,34 @@ exportBtn.addEventListener('click', async () => {
     }
   }
 
-  if (abortRender) {
-    encoder.close();
-    statusEl.style.color = '#fbbf24';
-    statusEl.textContent = 'Render cancelled.';
+  if (abortRender || encoderError) {
+    if (encoder.state !== 'closed') encoder.close();
+    if (abortRender) {
+      statusEl.style.color = '#fbbf24';
+      statusEl.textContent = 'Render cancelled.';
+    }
   } else {
     statusEl.textContent = 'Finalizing MP4...';
     await encoder.flush();
+    encoder.close();
     muxer.finalize();
 
-    const blob = new Blob([muxer.target.buffer], { type: 'video/mp4' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = `${fileNameBase}_orbit_30s.mp4`;
-    a.click();
-    URL.revokeObjectURL(a.href);
+    const buffer = muxer.target.buffer;
+    const sizeMB = (buffer.byteLength / (1024 * 1024)).toFixed(2);
+    const blob = new Blob([buffer], { type: 'video/mp4' });
+    const downloadUrl = URL.createObjectURL(blob);
 
-    statusEl.textContent = `Done! Downloaded ${fileNameBase}_orbit_30s.mp4`;
+    const a = document.createElement('a');
+    a.href = downloadUrl;
+    a.download = `${fileNameBase}_orbit_30s.mp4`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+
+    // Keep Blob URL alive long enough for the browser's download manager to finish reading
+    setTimeout(() => URL.revokeObjectURL(downloadUrl), 60_000);
+
+    statusEl.textContent = `Done! Downloaded ${fileNameBase}_orbit_30s.mp4 (${sizeMB} MB)`;
   }
 
   isRendering = false;
