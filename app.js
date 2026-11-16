@@ -1,7 +1,6 @@
 import * as THREE from 'three';
 import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import * as Mp4Muxer from 'mp4-muxer';
 
 const FPS = 30;
@@ -12,6 +11,11 @@ const canvas = document.getElementById('viewport');
 const dropzone = document.getElementById('dropzone');
 const fileInput = document.getElementById('fileInput');
 const clipSelect = document.getElementById('clipSelect');
+const lightPresetSelect = document.getElementById('lightPreset');
+const expSlider = document.getElementById('expSlider');
+const keyAngleSlider = document.getElementById('keyAngleSlider');
+const lockLightsToggle = document.getElementById('lockLightsToggle');
+const shadowToggle = document.getElementById('shadowToggle');
 const resolutionSelect = document.getElementById('resolutionSelect');
 const elevSlider = document.getElementById('elevSlider');
 const orbitSlider = document.getElementById('orbitSlider');
@@ -23,28 +27,127 @@ const cancelBtn = document.getElementById('cancelBtn');
 const progressBar = document.getElementById('progressBar');
 const statusEl = document.getElementById('status');
 
-// Renderer & Scene Setup
+// 1. Renderer with AgX Tone Mapping & Soft Shadows
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
 renderer.setSize(1280, 720, false);
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.05;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.AgXToneMapping;
+renderer.toneMappingExposure = Number(expSlider.value);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(bgColorInput.value);
 
-const pmrem = new THREE.PMREMGenerator(renderer);
-scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+// 2. Procedural Studio Softbox IBL Environment (for realistic PBR & metallic reflections)
+function createStudioEnvironment() {
+  const envScene = new THREE.Scene();
+  envScene.background = new THREE.Color(0x14171f);
 
-const dirLight = new THREE.DirectionalLight(0xffffff, 1.2);
-dirLight.position.set(4, 8, 5);
-scene.add(dirLight);
+  const addPanel = (color, intensity, pos, rot, size) => {
+    const mat = new THREE.MeshBasicMaterial({ color: new THREE.Color(color).multiplyScalar(intensity), side: THREE.DoubleSide });
+    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(size[0], size[1]), mat);
+    mesh.position.set(...pos);
+    mesh.rotation.set(...rot);
+    envScene.add(mesh);
+  };
 
+  // Overhead softbox, warm right strip, cool left strip, subtle floor bounce
+  addPanel(0xffffff, 4.5, [0, 6, 0], [Math.PI / 2, 0, 0], [6, 6]);
+  addPanel(0xfff4e6, 3.0, [5, 2, 3], [0, -Math.PI / 3, 0], [3, 5]);
+  addPanel(0xdbeafe, 2.5, [-5, 2, -2], [0, Math.PI / 2.5, 0], [3, 5]);
+  addPanel(0x333945, 1.0, [0, -5, 0], [-Math.PI / 2, 0, 0], [10, 10]);
+
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  const envRT = pmrem.fromScene(envScene, 0.04);
+  pmrem.dispose();
+  return envRT.texture;
+}
+scene.environment = createStudioEnvironment();
+scene.environmentIntensity = 0.65;
+
+// 3. Three-Point Studio Light Rig (Key + Fill + Rim + Bounce)
+const lightRig = new THREE.Group();
+scene.add(lightRig);
+
+const hemiLight = new THREE.HemisphereLight(0xf8fafc, 0x262b36, 0.45);
+scene.add(hemiLight);
+
+// Key Light (casts tight, high-res shadows on the 1-unit radius normalized model)
+const keyLight = new THREE.DirectionalLight(0xfffaf0, 2.4);
+keyLight.position.set(0, 3.5, 3.2);
+keyLight.castShadow = true;
+keyLight.shadow.mapSize.set(2048, 2048);
+keyLight.shadow.camera.near = 0.5;
+keyLight.shadow.camera.far = 12;
+const shadowBounds = 1.65;
+keyLight.shadow.camera.left = -shadowBounds;
+keyLight.shadow.camera.right = shadowBounds;
+keyLight.shadow.camera.top = shadowBounds;
+keyLight.shadow.camera.bottom = -shadowBounds;
+keyLight.shadow.bias = -0.0004;
+keyLight.shadow.normalBias = 0.025;
+lightRig.add(keyLight);
+
+// Fill Light (softens dark shadows on the opposite side)
+const fillLight = new THREE.DirectionalLight(0xdbeafe, 0.95);
+fillLight.position.set(-3.2, 1.4, 2.2);
+lightRig.add(fillLight);
+
+// Rim / Back Light (separates silhouette from background)
+const rimLight = new THREE.DirectionalLight(0xe0f2fe, 2.1);
+rimLight.position.set(-1.2, 2.6, -3.5);
+lightRig.add(rimLight);
+
+const LIGHT_PRESETS = {
+  studio: {
+    keyColor: 0xfffaf0, keyInt: 2.4,
+    fillColor: 0xdbeafe, fillInt: 0.95,
+    rimColor: 0xe0f2fe, rimInt: 2.1,
+    hemiInt: 0.45, envInt: 0.65
+  },
+  dramatic: {
+    keyColor: 0xffffff, keyInt: 3.1,
+    fillColor: 0x93c5fd, fillInt: 0.35,
+    rimColor: 0x60a5fa, rimInt: 3.0,
+    hemiInt: 0.2, envInt: 0.4
+  },
+  warm: {
+    keyColor: 0xffedd5, keyInt: 2.8,
+    fillColor: 0xbae6fd, fillInt: 0.85,
+    rimColor: 0xfde68a, rimInt: 2.3,
+    hemiInt: 0.5, envInt: 0.6
+  }
+};
+
+function applyLightPreset(name) {
+  const p = LIGHT_PRESETS[name] || LIGHT_PRESETS.studio;
+  keyLight.color.setHex(p.keyColor);
+  keyLight.intensity = p.keyInt;
+  fillLight.color.setHex(p.fillColor);
+  fillLight.intensity = p.fillInt;
+  rimLight.color.setHex(p.rimColor);
+  rimLight.intensity = p.rimInt;
+  hemiLight.intensity = p.hemiInt;
+  scene.environmentIntensity = p.envInt;
+}
+applyLightPreset('studio');
+
+// 4. Camera, Controls, Grid & Ground Shadow Catcher
 const camera = new THREE.PerspectiveCamera(45, 1280 / 720, 0.05, 100);
 const controls = new OrbitControls(camera, canvas);
 controls.enableDamping = true;
 
 const grid = new THREE.GridHelper(4, 16, 0x3b4252, 0x262b36);
 scene.add(grid);
+
+const shadowCatcher = new THREE.Mesh(
+  new THREE.PlaneGeometry(8, 8),
+  new THREE.ShadowMaterial({ opacity: 0.38 })
+);
+shadowCatcher.rotation.x = -Math.PI / 2;
+shadowCatcher.receiveShadow = true;
+scene.add(shadowCatcher);
 
 let modelPivot = new THREE.Group();
 scene.add(modelPivot);
@@ -58,13 +161,22 @@ let isRendering = false;
 let abortRender = false;
 const clock = new THREE.Clock();
 
-// Check WebCodecs support
 if (typeof VideoEncoder === 'undefined') {
   statusEl.style.color = '#f87171';
   statusEl.textContent = 'WebCodecs API not supported in this browser. Use Chrome, Edge, or Safari 16.4+.';
 }
 
-// Compute union bounding box across the entire animation clip
+function updateLightRigOrientation() {
+  const keyOffset = THREE.MathUtils.degToRad(Number(keyAngleSlider.value));
+  if (lockLightsToggle.checked) {
+    const camAzimuth = Math.atan2(camera.position.x, camera.position.z);
+    lightRig.rotation.y = camAzimuth + keyOffset;
+  } else {
+    lightRig.rotation.y = keyOffset;
+  }
+}
+
+// Compute union bounding box across the animation clip
 function computeAnimatedBounds(fbx, animMixer, clip) {
   const unionBox = new THREE.Box3();
   const sampleBox = new THREE.Box3();
@@ -87,7 +199,6 @@ function computeAnimatedBounds(fbx, animMixer, clip) {
 function frameModel(clip = null) {
   if (!currentFbx) return;
 
-  // Reset transforms before measuring
   modelPivot.scale.setScalar(1);
   currentFbx.position.set(0, 0, 0);
 
@@ -101,9 +212,10 @@ function frameModel(clip = null) {
   const scale = sphere.radius > 0 ? 1.0 / sphere.radius : 1.0;
   modelPivot.scale.setScalar(scale);
 
-  // Place floor grid directly underneath the lowest point of the normalized model
+  // Place floor grid & shadow catcher directly beneath the model's lowest point
   const scaledMinY = (box.min.y - center.y) * scale;
   grid.position.y = scaledMinY;
+  shadowCatcher.position.y = scaledMinY + 0.001;
 
   baseRadius = 1.0;
   setCameraAngle(0);
@@ -115,7 +227,6 @@ function setCameraAngle(progress) {
   const padding = Number(padSlider.value);
   const fovRad = THREE.MathUtils.degToRad(camera.fov);
 
-  // Account for horizontal aspect ratio if portrait/square
   const minFov = camera.aspect < 1
     ? 2 * Math.atan(Math.tan(fovRad / 2) * camera.aspect)
     : fovRad;
@@ -131,6 +242,7 @@ function setCameraAngle(progress) {
   camera.lookAt(0, 0, 0);
   controls.target.set(0, 0, 0);
   controls.update();
+  updateLightRigOrientation();
 }
 
 function playClip(index) {
@@ -149,6 +261,27 @@ function playClip(index) {
   }
 }
 
+function prepareMaterialsAndShadows(fbx) {
+  fbx.traverse((child) => {
+    if (child.isMesh) {
+      child.castShadow = true;
+      child.receiveShadow = true;
+
+      const materials = Array.isArray(child.material) ? child.material : [child.material];
+      materials.forEach((mat) => {
+        if (!mat) return;
+        if (mat.map) mat.map.colorSpace = THREE.SRGBColorSpace;
+        // Soften overly harsh default Phong specular highlights from FBX imports
+        if (mat.isMeshPhongMaterial) {
+          mat.shininess = Math.min(mat.shininess || 30, 40);
+          if (mat.specular) mat.specular.multiplyScalar(0.35);
+        }
+        mat.needsUpdate = true;
+      });
+    }
+  });
+}
+
 function loadFBXFile(file) {
   if (!file || !file.name.toLowerCase().endsWith('.fbx')) {
     statusEl.style.color = '#f87171';
@@ -165,6 +298,8 @@ function loadFBXFile(file) {
     url,
     (fbx) => {
       URL.revokeObjectURL(url);
+      prepareMaterialsAndShadows(fbx);
+
       scene.remove(modelPivot);
       modelPivot = new THREE.Group();
       scene.add(modelPivot);
@@ -193,7 +328,7 @@ function loadFBXFile(file) {
       }
 
       exportBtn.disabled = typeof VideoEncoder === 'undefined';
-      statusEl.textContent = `Loaded "${file.name}". Drag viewport to inspect or click Export 30s MP4.`;
+      statusEl.textContent = `Loaded "${file.name}". Adjust lighting or click Export 30s MP4.`;
     },
     undefined,
     (err) => {
@@ -216,6 +351,22 @@ dropzone.addEventListener('drop', (e) => {
 });
 
 clipSelect.addEventListener('change', (e) => playClip(Number(e.target.value)));
+
+lightPresetSelect.addEventListener('change', (e) => applyLightPreset(e.target.value));
+expSlider.addEventListener('input', () => {
+  const val = Number(expSlider.value);
+  document.getElementById('expVal').textContent = val.toFixed(2);
+  renderer.toneMappingExposure = val;
+});
+keyAngleSlider.addEventListener('input', () => {
+  document.getElementById('keyAngleVal').textContent = `${keyAngleSlider.value}°`;
+  updateLightRigOrientation();
+});
+lockLightsToggle.addEventListener('change', updateLightRigOrientation);
+shadowToggle.addEventListener('change', () => {
+  shadowCatcher.visible = shadowToggle.checked;
+  keyLight.castShadow = shadowToggle.checked;
+});
 
 resolutionSelect.addEventListener('change', () => {
   const [w, h] = resolutionSelect.value.split('x').map(Number);
@@ -276,7 +427,7 @@ exportBtn.addEventListener('click', async () => {
   });
 
   encoder.configure({
-    codec: 'avc1.4d002a', // H.264 Main Profile Level 4.2 (supports up to 1080p30)
+    codec: 'avc1.4d002a',
     width,
     height,
     bitrate,
@@ -331,7 +482,7 @@ exportBtn.addEventListener('click', async () => {
   exportBtn.disabled = false;
   cancelBtn.hidden = true;
   progressBar.hidden = true;
-  clock.getDelta(); // Reset clock delta so preview doesn't jump
+  clock.getDelta();
 });
 
 // Interactive Preview Loop
@@ -342,6 +493,7 @@ function animate() {
   const delta = clock.getDelta();
   if (mixer && activeAction) mixer.update(delta);
   controls.update();
+  updateLightRigOrientation();
   renderer.render(scene, camera);
 }
 animate();
