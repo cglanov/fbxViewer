@@ -6,6 +6,7 @@ import * as Mp4Muxer from 'mp4-muxer';
 const FPS = 30;
 const DURATION_SEC = 30;
 const TOTAL_FRAMES = FPS * DURATION_SEC;
+const STORY_TEXT = '4th graders in DESIGN created characters on tinkerCAD by putting together basic shapes like spheres, cones and cubes. Then they gave their character motion-capture Salsa Dance movements.';
 
 const canvas = document.getElementById('viewport');
 const dropzone = document.getElementById('dropzone');
@@ -26,6 +27,16 @@ const exportBtn = document.getElementById('exportBtn');
 const cancelBtn = document.getElementById('cancelBtn');
 const progressBar = document.getElementById('progressBar');
 const statusEl = document.getElementById('status');
+const previewCharacterName = document.getElementById('previewCharacterName');
+
+function getVideoDimensions() {
+  const [totalWidth, height] = resolutionSelect.value.split('x').map(Number);
+  const leftWidth = Math.round(totalWidth / 3);
+  const rightWidth = totalWidth - leftWidth;
+  return { totalWidth, height, leftWidth, rightWidth };
+}
+
+const initDims = getVideoDimensions();
 
 // 1. Opaque WebGL Renderer with AgX Tone Mapping & Soft Shadows
 const renderer = new THREE.WebGLRenderer({
@@ -34,7 +45,7 @@ const renderer = new THREE.WebGLRenderer({
   antialias: true,
   preserveDrawingBuffer: true
 });
-renderer.setSize(1280, 720, false);
+renderer.setSize(initDims.rightWidth, initDims.height, false);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.AgXToneMapping;
 renderer.toneMappingExposure = Number(expSlider.value);
@@ -138,7 +149,7 @@ function applyLightPreset(name) {
 applyLightPreset('studio');
 
 // 4. Camera, Controls, Grid & Ground Shadow Catcher
-const camera = new THREE.PerspectiveCamera(45, 1280 / 720, 0.05, 100);
+const camera = new THREE.PerspectiveCamera(45, initDims.rightWidth / initDims.height, 0.05, 100);
 const controls = new OrbitControls(camera, canvas);
 controls.enableDamping = true;
 
@@ -160,7 +171,7 @@ let currentFbx = null;
 let mixer = null;
 let activeAction = null;
 let baseRadius = 1.0;
-let fileNameBase = 'model';
+let fileNameBase = 'Model';
 let isRendering = false;
 let abortRender = false;
 const clock = new THREE.Clock();
@@ -168,6 +179,12 @@ const clock = new THREE.Clock();
 if (typeof VideoEncoder === 'undefined') {
   statusEl.style.color = '#f87171';
   statusEl.textContent = 'WebCodecs API not supported in this browser. Use Chrome, Edge, or Safari 16.4+.';
+}
+
+function formatCapitalizedName(filename) {
+  const base = filename.replace(/\.fbx$/i, '').trim();
+  if (!base) return 'Model';
+  return base.charAt(0).toUpperCase() + base.slice(1);
 }
 
 function updateLightRigOrientation() {
@@ -340,7 +357,9 @@ function loadFBXFile(file) {
     return;
   }
 
-  fileNameBase = file.name.replace(/\.fbx$/i, '');
+  fileNameBase = formatCapitalizedName(file.name);
+  previewCharacterName.textContent = fileNameBase;
+
   statusEl.style.color = '#4ade80';
   statusEl.textContent = `Loading "${file.name}"...`;
 
@@ -387,7 +406,7 @@ function loadFBXFile(file) {
       }
 
       exportBtn.disabled = typeof VideoEncoder === 'undefined';
-      statusEl.textContent = `Loaded "${file.name}". Adjust lighting or click Export 30s MP4.`;
+      statusEl.textContent = `Loaded "${file.name}". Ready to export ${fileNameBase}.mp4.`;
     },
     undefined,
     (err) => {
@@ -396,6 +415,82 @@ function loadFBXFile(file) {
       statusEl.textContent = `Failed to parse FBX: ${err.message || err}`;
     }
   );
+}
+
+// Helper to draw word-wrapped text onto the 2D export canvas
+function wrapTextLines(ctx, text, maxWidth) {
+  const words = text.split(/\s+/);
+  const lines = [];
+  let currentLine = '';
+
+  for (const word of words) {
+    const testLine = currentLine ? `${currentLine} ${word}` : word;
+    if (ctx.measureText(testLine).width > maxWidth && currentLine) {
+      lines.push(currentLine);
+      currentLine = word;
+    } else {
+      currentLine = testLine;
+    }
+  }
+  if (currentLine) lines.push(currentLine);
+  return lines;
+}
+
+// Pre-renders the left 1/3 static text panel onto an offscreen canvas
+function createLeftPanelCanvas(panelWidth, height, characterTitle) {
+  const panelCanvas = document.createElement('canvas');
+  panelCanvas.width = panelWidth;
+  panelCanvas.height = height;
+  const ctx = panelCanvas.getContext('2d');
+
+  // Background gradient
+  const grad = ctx.createLinearGradient(0, 0, panelWidth, height);
+  grad.addColorStop(0, '#1b2232');
+  grad.addColorStop(1, '#11151e');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, panelWidth, height);
+
+  // Subtle right divider border
+  ctx.fillStyle = '#2b3548';
+  ctx.fillRect(panelWidth - 3, 0, 3, height);
+
+  const paddingX = Math.round(panelWidth * 0.11);
+  const maxTextWidth = panelWidth - paddingX * 2;
+
+  // Top paragraph typography
+  const bodyFontSize = Math.round(height * 0.036);
+  const bodyLineHeight = Math.round(bodyFontSize * 1.48);
+  ctx.font = `500 ${bodyFontSize}px system-ui, -apple-system, sans-serif`;
+  const bodyLines = wrapTextLines(ctx, STORY_TEXT, maxTextWidth);
+
+  // Character name typography (larger & different color)
+  let titleFontSize = Math.round(height * 0.068);
+  ctx.font = `800 ${titleFontSize}px system-ui, -apple-system, sans-serif`;
+  while (ctx.measureText(characterTitle).width > maxTextWidth && titleFontSize > 18) {
+    titleFontSize -= 2;
+    ctx.font = `800 ${titleFontSize}px system-ui, -apple-system, sans-serif`;
+  }
+
+  const gap = Math.round(height * 0.055);
+  const totalBlockHeight = bodyLines.length * bodyLineHeight + gap + titleFontSize;
+  let cursorY = Math.round((height - totalBlockHeight) / 2) + bodyFontSize;
+
+  // Draw top paragraph
+  ctx.fillStyle = '#e2e8f0';
+  ctx.font = `500 ${bodyFontSize}px system-ui, -apple-system, sans-serif`;
+  ctx.textBaseline = 'alphabetic';
+  for (const line of bodyLines) {
+    ctx.fillText(line, paddingX, cursorY);
+    cursorY += bodyLineHeight;
+  }
+
+  // Draw larger colored character name below
+  cursorY += gap - (bodyLineHeight - bodyFontSize);
+  ctx.fillStyle = '#fbbf24';
+  ctx.font = `800 ${titleFontSize}px system-ui, -apple-system, sans-serif`;
+  ctx.fillText(characterTitle, paddingX, cursorY);
+
+  return panelCanvas;
 }
 
 // UI Event Listeners
@@ -427,9 +522,9 @@ shadowToggle.addEventListener('change', () => {
 });
 
 resolutionSelect.addEventListener('change', () => {
-  const [w, h] = resolutionSelect.value.split('x').map(Number);
-  renderer.setSize(w, h, false);
-  camera.aspect = w / h;
+  const { rightWidth, height } = getVideoDimensions();
+  renderer.setSize(rightWidth, height, false);
+  camera.aspect = rightWidth / height;
   camera.updateProjectionMatrix();
   setCameraAngle(0);
 });
@@ -459,7 +554,7 @@ cancelBtn.addEventListener('click', () => {
 // Pick the most compatible H.264 profile supported by the user's browser/GPU
 async function findSupportedH264Config(width, height, bitrate, framerate) {
   const codecs = [
-    'avc1.42E028', // Constrained Baseline Level 4.0 (widest compatibility: Windows/Mac/iOS/Software)
+    'avc1.42E028', // Constrained Baseline Level 4.0
     'avc1.4d0028', // Main Profile Level 4.0
     'avc1.640028', // High Profile Level 4.0
     'avc1.42001f'  // Baseline Level 3.1 fallback
@@ -495,10 +590,10 @@ exportBtn.addEventListener('click', async () => {
   progressBar.hidden = false;
   progressBar.value = 0;
 
-  const [width, height] = resolutionSelect.value.split('x').map(Number);
-  const bitrate = width * height >= 1920 * 1080 ? 8_000_000 : 5_000_000;
+  const { totalWidth, height, leftWidth, rightWidth } = getVideoDimensions();
+  const bitrate = totalWidth * height >= 1920 * 1080 ? 8_000_000 : 5_000_000;
 
-  const encoderConfig = await findSupportedH264Config(width, height, bitrate, FPS);
+  const encoderConfig = await findSupportedH264Config(totalWidth, height, bitrate, FPS);
   if (!encoderConfig) {
     statusEl.style.color = '#f87171';
     statusEl.textContent = 'No supported H.264 encoder found in this browser.';
@@ -509,16 +604,24 @@ exportBtn.addEventListener('click', async () => {
     return;
   }
 
-  // Opaque 2D staging canvas ensures WebCodecs receives standard RGB frames (outputs yuv420p)
+  // Ensure WebGL viewport matches the right-hand 2/3 region
+  renderer.setSize(rightWidth, height, false);
+  camera.aspect = rightWidth / height;
+  camera.updateProjectionMatrix();
+
+  // Pre-render the static left 1/3 text panel
+  const leftPanelCanvas = createLeftPanelCanvas(leftWidth, height, fileNameBase);
+
+  // Full wide-format 2D composite canvas
   const exportCanvas = document.createElement('canvas');
-  exportCanvas.width = width;
+  exportCanvas.width = totalWidth;
   exportCanvas.height = height;
   const exportCtx = exportCanvas.getContext('2d', { alpha: false });
 
   let encoderError = null;
   const muxer = new Mp4Muxer.Muxer({
     target: new Mp4Muxer.ArrayBufferTarget(),
-    video: { codec: 'avc', width, height },
+    video: { codec: 'avc', width: totalWidth, height },
     firstTimestampBehavior: 'offset',
     fastStart: 'in-memory'
   });
@@ -549,7 +652,9 @@ exportBtn.addEventListener('click', async () => {
     setCameraAngle(frameIdx / TOTAL_FRAMES);
     renderer.render(scene, camera);
 
-    exportCtx.drawImage(canvas, 0, 0, width, height);
+    // Composite left text panel (1/3 width) + right 3D animation (2/3 width)
+    exportCtx.drawImage(leftPanelCanvas, 0, 0, leftWidth, height);
+    exportCtx.drawImage(canvas, leftWidth, 0, rightWidth, height);
 
     const frame = new VideoFrame(exportCanvas, {
       timestamp: frameIdx * frameDurationUs,
@@ -590,17 +695,17 @@ exportBtn.addEventListener('click', async () => {
     const blob = new Blob([buffer], { type: 'video/mp4' });
     const downloadUrl = URL.createObjectURL(blob);
 
+    const outputFileName = `${fileNameBase}.mp4`;
     const a = document.createElement('a');
     a.href = downloadUrl;
-    a.download = `${fileNameBase}_orbit_30s.mp4`;
+    a.download = outputFileName;
     document.body.appendChild(a);
     a.click();
     a.remove();
 
-    // Keep Blob URL alive long enough for the browser's download manager to finish reading
     setTimeout(() => URL.revokeObjectURL(downloadUrl), 60_000);
 
-    statusEl.textContent = `Done! Downloaded ${fileNameBase}_orbit_30s.mp4 (${sizeMB} MB)`;
+    statusEl.textContent = `Done! Downloaded ${outputFileName} (${sizeMB} MB)`;
   }
 
   isRendering = false;
