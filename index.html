@@ -101,16 +101,50 @@
       justify-content: center;
       padding: 1.5rem;
     }
-    canvas {
-      max-width: 100%;
-      max-height: 100%;
+    .preview-frame {
+      display: flex;
+      width: 100%;
+      max-width: 1280px;
+      aspect-ratio: 16 / 9;
       border: 1px solid var(--border);
       border-radius: 8px;
+      overflow: hidden;
       box-shadow: 0 20px 50px rgba(0, 0, 0, 0.55);
+      background: #141821;
+    }
+    .info-panel {
+      width: 33.333%;
+      background: linear-gradient(160deg, #1b2232 0%, #11151e 100%);
+      border-right: 2px solid #2b3548;
+      padding: clamp(1rem, 2.2vw, 2rem);
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 1.25rem;
+    }
+    .info-panel p {
+      margin: 0;
+      font-size: clamp(0.85rem, 1.35vw, 1.15rem);
+      line-height: 1.5;
+      color: #e2e8f0;
+    }
+    .character-title {
+      font-size: clamp(1.4rem, 2.4vw, 2.1rem);
+      font-weight: 800;
+      color: #fbbf24;
+      word-break: break-word;
+      line-height: 1.2;
+    }
+    canvas {
+      width: 66.667%;
+      height: 100%;
+      display: block;
     }
     @media (max-width: 820px) {
       body { grid-template-columns: 1fr; grid-template-rows: auto 1fr; height: auto; overflow: auto; }
-      canvas { width: 100%; height: auto; }
+      .preview-frame { flex-direction: column; aspect-ratio: auto; }
+      .info-panel, canvas { width: 100%; }
+      canvas { aspect-ratio: 16 / 9; }
     }
   </style>
   <script type="importmap">
@@ -134,6 +168,12 @@
       <strong>Drop .fbx file here</strong><br />or click to browse
       <input type="file" id="fileInput" accept=".fbx" hidden />
     </div>
+
+    <button id="exportBtn" disabled>Export 30s MP4</button>
+    <button id="cancelBtn" class="secondary" hidden>Cancel Render</button>
+
+    <progress id="progressBar" value="0" max="900" hidden></progress>
+    <div id="status">Upload an animated .fbx to preview.</div>
 
     <div class="control-group">
       <label for="clipSelect">Animation Clip</label>
@@ -178,7 +218,6 @@
       <select id="resolutionSelect">
         <option value="1280x720" selected>1280 × 720 (HD 16:9)</option>
         <option value="1920x1080">1920 × 1080 (Full HD 16:9)</option>
-        <option value="1080x1080">1080 × 1080 (Square 1:1)</option>
       </select>
     </div>
 
@@ -206,16 +245,16 @@
       <input type="checkbox" id="gridToggle" checked />
       Show reference floor grid
     </label>
-
-    <button id="exportBtn" disabled>Export 30s MP4</button>
-    <button id="cancelBtn" class="secondary" hidden>Cancel Render</button>
-
-    <progress id="progressBar" value="0" max="900" hidden></progress>
-    <div id="status">Upload an animated .fbx to preview.</div>
   </aside>
 
   <main>
-    <canvas id="viewport" width="1280" height="720"></canvas>
+    <div class="preview-frame" id="previewFrame">
+      <div class="info-panel">
+        <p>4th graders in DESIGN created characters on tinkerCAD by putting together basic shapes like spheres, cones and cubes. Then they gave their character motion-capture Salsa Dance movements.</p>
+        <div class="character-title" id="previewCharacterName">Model</div>
+      </div>
+      <canvas id="viewport" width="854" height="720"></canvas>
+    </div>
   </main>
 
   <script type="module" src="./app.js"></script>
